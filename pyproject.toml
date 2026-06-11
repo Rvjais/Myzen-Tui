@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "myzen-tui"
+version = "0.1.0"
+description = "Terminal UI for WE360 MyZen employee monitoring"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = ["textual"]
+authors = [{name = "Ranveer Jaiswal", email = "ranveer.jaiswal@brandingpioneers.co.in"}]
+
+[project.urls]
+Homepage = "https://github.com/Rvjais/Myzen-Tui"
+
+[project.scripts]
+myzen-tui = "myzen_tui:main"
