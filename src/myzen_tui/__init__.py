@@ -7,7 +7,7 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult, ScreenStackError
 from textual.screen import Screen
-from textual.widgets import Static, Input, Button
+from textual.widgets import Static, Input, Button, LoadingIndicator
 from textual.containers import Container, Horizontal
 
 CONFIG = Path.home() / ".config" / "ai.zs" / "zs.ini"
@@ -339,6 +339,7 @@ class SetupScreen(Screen):
             Static("Enter the path to your organisation's .sh setup file\ndownloaded from the WE360 portal.", id="setup-desc"),
             Input(placeholder="/home/user/Downloads/eyJ...==.sh", id="setup-path"),
             Button("Run Setup", variant="primary", id="setup-btn"),
+            LoadingIndicator(id="setup-spinner"),
             Static("", id="setup-msg"),
             id="setup-box",
         )
@@ -354,15 +355,19 @@ class SetupScreen(Screen):
 
     async def run_setup(self, path):
         msg = self.query_one("#setup-msg", Static)
+        spinner = self.query_one("#setup-spinner", LoadingIndicator)
+        spinner.add_class("-visible")
         cfg = extract_keyconfig(path)
         if not cfg:
             msg.update("Could not decode keyconfig from filename.")
+            spinner.remove_class("-visible")
             self.query_one("#setup-btn", Button).disabled = False
             return
         if not Path("/opt/zs/zs").exists():
             deb_url = get_deb_url(path)
             if not deb_url:
                 msg.update("Could not find download URL in script.")
+                spinner.remove_class("-visible")
                 self.query_one("#setup-btn", Button).disabled = False
                 return
             msg.update("Downloading agent package...")
@@ -371,6 +376,7 @@ class SetupScreen(Screen):
                 urllib.request.urlretrieve(deb_url, deb_path)
             except Exception:
                 msg.update("Download failed. Check internet connection.")
+                spinner.remove_class("-visible")
                 self.query_one("#setup-btn", Button).disabled = False
                 return
             msg.update("Extracting agent...")
@@ -390,6 +396,7 @@ class SetupScreen(Screen):
                         raise RuntimeError("No data.tar found in deb")
                 except Exception as e:
                     msg.update(f"Extraction failed: {e}")
+                    spinner.remove_class("-visible")
                     self.query_one("#setup-btn", Button).disabled = False
                     return
             msg.update("Installing agent (requires admin password)...")
@@ -399,6 +406,7 @@ class SetupScreen(Screen):
             except Exception:
                 msg.update("Automatic install failed. Run this manually:\n"
                            "sudo mkdir -p /opt/zs && sudo cp -r /tmp/zs_extract/opt/zs/. /opt/zs/")
+                spinner.remove_class("-visible")
                 self.query_one("#setup-btn", Button).disabled = False
                 return
         msg.update("Writing organisation config...")
@@ -410,6 +418,7 @@ class SetupScreen(Screen):
         except Exception:
             msg.update("Config write failed. Run manually:\n"
                        "sudo cp /tmp/keyconfig.json /opt/zs/keyconfig.json")
+            spinner.remove_class("-visible")
             self.query_one("#setup-btn", Button).disabled = False
             return
         msg.update("Starting background service...")
@@ -419,6 +428,7 @@ class SetupScreen(Screen):
         subprocess.run(["systemctl", "--user", "start", "zsconfigure.timer"], capture_output=True)
         subprocess.run(["systemctl", "--user", "enable", "zsconfigure.timer"], capture_output=True)
         msg.update("Setup complete! You can now log in.")
+        spinner.remove_class("-visible")
         await asyncio.sleep(1)
         self.app.switch_screen(LoginScreen())
 
@@ -941,6 +951,19 @@ class MyZenApp(App):
         color: #565f89;
         background: #1f2335;
     }
+
+    #setup-spinner {
+        margin: 1 0;
+        display: none;
+    }
+    #setup-spinner.-visible {
+        display: block;
+    }
+    #setup-msg {
+        height: 3;
+        text-align: center;
+        color: #a9b1d6;
+    }
     """
 
     def _on_key(self, event):
@@ -953,30 +976,35 @@ class MyZenApp(App):
             return
         handled = True
         if event.key == "p" and not s.pi:
+            self.notify("Processing...")
             if punch_in():
                 s.load_data()
                 self.notify("Punched in")
             else:
                 self.notify("Punch-in failed", severity="error")
         elif event.key == "o" and s.pi:
+            self.notify("Processing...")
             if punch_out():
                 s.load_data()
                 self.notify("Punched out")
             else:
                 self.notify("Punch-out failed", severity="error")
         elif event.key == "b" and not s.ob:
+            self.notify("Processing...")
             if break_start():
                 s.load_data()
                 self.notify("Break started")
             else:
                 self.notify("Break start failed", severity="error")
         elif event.key == "e" and s.ob:
+            self.notify("Processing...")
             if break_end():
                 s.load_data()
                 self.notify("Break ended")
             else:
                 self.notify("Break end failed", severity="error")
         elif event.key == "r":
+            self.notify("Refreshing...")
             s.load_data()
             self.notify("Refreshed")
         elif event.key == "h":
