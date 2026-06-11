@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import configparser, json, sqlite3, urllib.request, urllib.parse, urllib.error
-import subprocess, re, shlex, sys, os, base64, asyncio
+import subprocess, re, shlex, sys, os, base64, asyncio, shutil
 import ctypes, ctypes.util
 from datetime import datetime, timezone
 from pathlib import Path
@@ -374,21 +374,50 @@ class SetupScreen(Screen):
                 self.query_one("#setup-btn", Button).disabled = False
                 return
             msg.update("Extracting agent...")
-            subprocess.run(["dpkg-deb", "-x", deb_path, "/tmp/zs_extract"], check=True)
+            extract_dir = "/tmp/zs_extract"
+            subprocess.run(["rm", "-rf", extract_dir], capture_output=True)
+            subprocess.run(["mkdir", "-p", extract_dir], capture_output=True)
+            try:
+                subprocess.run(["dpkg-deb", "-x", deb_path, extract_dir], check=True, capture_output=True)
+            except FileNotFoundError:
+                try:
+                    subprocess.run(["ar", "x", deb_path], check=True, capture_output=True, cwd=extract_dir)
+                    for f in sorted(os.listdir(extract_dir)):
+                        if f.startswith("data.tar"):
+                            subprocess.run(["tar", "xf", os.path.join(extract_dir, f), "-C", extract_dir], check=True)
+                            break
+                    else:
+                        raise RuntimeError("No data.tar found in deb")
+                except Exception as e:
+                    msg.update(f"Extraction failed: {e}")
+                    self.query_one("#setup-btn", Button).disabled = False
+                    return
             msg.update("Installing agent (requires admin password)...")
-            subprocess.run(["pkexec", "mkdir", "-p", "/opt/zs"], check=True)
-            subprocess.run(["pkexec", "cp", "-r", "/tmp/zs_extract/opt/zs/.", "/opt/zs/"], check=True)
+            try:
+                subprocess.run(["pkexec", "mkdir", "-p", "/opt/zs"], check=True)
+                subprocess.run(["pkexec", "cp", "-r", f"{extract_dir}/opt/zs/.", "/opt/zs/"], check=True)
+            except Exception:
+                msg.update("Automatic install failed. Run this manually:\n"
+                           "sudo mkdir -p /opt/zs && sudo cp -r /tmp/zs_extract/opt/zs/. /opt/zs/")
+                self.query_one("#setup-btn", Button).disabled = False
+                return
         msg.update("Writing organisation config...")
         kc = {"stealth_key": cfg["stealth_key"], "tenant_id": cfg["tenant_id"]}
         tmp_kc = "/tmp/keyconfig.json"
         json.dump(kc, open(tmp_kc, "w"))
-        subprocess.run(["pkexec", "cp", tmp_kc, "/opt/zs/keyconfig.json"], check=True)
+        try:
+            subprocess.run(["pkexec", "cp", tmp_kc, "/opt/zs/keyconfig.json"], check=True)
+        except Exception:
+            msg.update("Config write failed. Run manually:\n"
+                       "sudo cp /tmp/keyconfig.json /opt/zs/keyconfig.json")
+            self.query_one("#setup-btn", Button).disabled = False
+            return
         msg.update("Starting background service...")
         subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
-        subprocess.run(["systemctl", "--user", "enable", "zsvcmonitor"], capture_output=True)
         subprocess.run(["systemctl", "--user", "start", "zsvcmonitor"], capture_output=True)
-        subprocess.run(["systemctl", "--user", "enable", "zsconfigure.timer"], capture_output=True)
+        subprocess.run(["systemctl", "--user", "enable", "zsvcmonitor"], capture_output=True)
         subprocess.run(["systemctl", "--user", "start", "zsconfigure.timer"], capture_output=True)
+        subprocess.run(["systemctl", "--user", "enable", "zsconfigure.timer"], capture_output=True)
         msg.update("Setup complete! You can now log in.")
         await asyncio.sleep(1)
         self.app.switch_screen(LoginScreen())
