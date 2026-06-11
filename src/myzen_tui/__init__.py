@@ -9,6 +9,7 @@ from textual.app import App, ComposeResult, ScreenStackError
 from textual.screen import Screen
 from textual.widgets import Static, Input, Button, LoadingIndicator
 from textual.containers import Container, Horizontal
+from textual import work
 
 CONFIG = Path.home() / ".config" / "ai.zs" / "zs.ini"
 DB = Path.home() / ".local" / "share" / "ai.zs" / "zs" / "zs.db"
@@ -350,36 +351,40 @@ class SetupScreen(Screen):
             if not path or not Path(path).exists():
                 self.query_one("#setup-msg", Static).update("File not found.")
                 return
-            self.query_one("#setup-btn", Button).disabled = True
-            self.run_worker(self.run_setup(path), exclusive=True)
+            self._btn = self.query_one("#setup-btn", Button)
+            self._msg = self.query_one("#setup-msg", Static)
+            self._spinner = self.query_one("#setup-spinner", LoadingIndicator)
+            self._btn.disabled = True
+            self.run_setup(path)
 
-    async def run_setup(self, path):
-        msg = self.query_one("#setup-msg", Static)
-        spinner = self.query_one("#setup-spinner", LoadingIndicator)
-        spinner.add_class("-visible")
+    @work(thread=True)
+    def run_setup(self, path):
+        def ui(fn, *args, **kwargs):
+            return self.app.call_from_thread(fn, *args, **kwargs)
+        ui(self._spinner.add_class, "-visible")
         cfg = extract_keyconfig(path)
         if not cfg:
-            msg.update("Could not decode keyconfig from filename.")
-            spinner.remove_class("-visible")
-            self.query_one("#setup-btn", Button).disabled = False
+            ui(self._msg.update, "Could not decode keyconfig from filename.")
+            ui(self._spinner.remove_class, "-visible")
+            ui(setattr, self._btn, "disabled", False)
             return
         if not Path("/opt/zs/zs").exists():
             deb_url = get_deb_url(path)
             if not deb_url:
-                msg.update("Could not find download URL in script.")
-                spinner.remove_class("-visible")
-                self.query_one("#setup-btn", Button).disabled = False
+                ui(self._msg.update, "Could not find download URL in script.")
+                ui(self._spinner.remove_class, "-visible")
+                ui(setattr, self._btn, "disabled", False)
                 return
-            msg.update("Downloading agent package...")
+            ui(self._msg.update, "Downloading agent package...")
             deb_path = "/tmp/zs.deb"
             try:
                 urllib.request.urlretrieve(deb_url, deb_path)
             except Exception:
-                msg.update("Download failed. Check internet connection.")
-                spinner.remove_class("-visible")
-                self.query_one("#setup-btn", Button).disabled = False
+                ui(self._msg.update, "Download failed. Check internet connection.")
+                ui(self._spinner.remove_class, "-visible")
+                ui(setattr, self._btn, "disabled", False)
                 return
-            msg.update("Extracting agent...")
+            ui(self._msg.update, "Extracting agent...")
             extract_dir = "/tmp/zs_extract"
             subprocess.run(["rm", "-rf", extract_dir], capture_output=True)
             subprocess.run(["mkdir", "-p", extract_dir], capture_output=True)
@@ -395,42 +400,45 @@ class SetupScreen(Screen):
                     else:
                         raise RuntimeError("No data.tar found in deb")
                 except Exception as e:
-                    msg.update(f"Extraction failed: {e}")
-                    spinner.remove_class("-visible")
-                    self.query_one("#setup-btn", Button).disabled = False
+                    ui(self._msg.update, f"Extraction failed: {e}")
+                    ui(self._spinner.remove_class, "-visible")
+                    ui(setattr, self._btn, "disabled", False)
                     return
-            msg.update("Installing agent (requires admin password)...")
+            ui(self._msg.update, "Installing agent (requires admin password)...")
             try:
                 subprocess.run(["pkexec", "mkdir", "-p", "/opt/zs"], check=True)
                 subprocess.run(["pkexec", "cp", "-r", f"{extract_dir}/opt/zs/.", "/opt/zs/"], check=True)
             except Exception:
-                msg.update("Automatic install failed. Run this manually:\n"
-                           "sudo mkdir -p /opt/zs && sudo cp -r /tmp/zs_extract/opt/zs/. /opt/zs/")
-                spinner.remove_class("-visible")
-                self.query_one("#setup-btn", Button).disabled = False
+                ui(self._msg.update,
+                    "Automatic install failed. Run this manually:\n"
+                    "sudo mkdir -p /opt/zs && sudo cp -r /tmp/zs_extract/opt/zs/. /opt/zs/")
+                ui(self._spinner.remove_class, "-visible")
+                ui(setattr, self._btn, "disabled", False)
                 return
-        msg.update("Writing organisation config...")
+        ui(self._msg.update, "Writing organisation config...")
         kc = {"stealth_key": cfg["stealth_key"], "tenant_id": cfg["tenant_id"]}
         tmp_kc = "/tmp/keyconfig.json"
         json.dump(kc, open(tmp_kc, "w"))
         try:
             subprocess.run(["pkexec", "cp", tmp_kc, "/opt/zs/keyconfig.json"], check=True)
         except Exception:
-            msg.update("Config write failed. Run manually:\n"
-                       "sudo cp /tmp/keyconfig.json /opt/zs/keyconfig.json")
-            spinner.remove_class("-visible")
-            self.query_one("#setup-btn", Button).disabled = False
+            ui(self._msg.update,
+                "Config write failed. Run manually:\n"
+                "sudo cp /tmp/keyconfig.json /opt/zs/keyconfig.json")
+            ui(self._spinner.remove_class, "-visible")
+            ui(setattr, self._btn, "disabled", False)
             return
-        msg.update("Starting background service...")
+        ui(self._msg.update, "Starting background service...")
         subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
         subprocess.run(["systemctl", "--user", "start", "zsvcmonitor"], capture_output=True)
         subprocess.run(["systemctl", "--user", "enable", "zsvcmonitor"], capture_output=True)
         subprocess.run(["systemctl", "--user", "start", "zsconfigure.timer"], capture_output=True)
         subprocess.run(["systemctl", "--user", "enable", "zsconfigure.timer"], capture_output=True)
-        msg.update("Setup complete! You can now log in.")
-        spinner.remove_class("-visible")
-        await asyncio.sleep(1)
-        self.app.switch_screen(LoginScreen())
+        ui(self._msg.update, "Setup complete! You can now log in.")
+        ui(self._spinner.remove_class, "-visible")
+        import time
+        time.sleep(1)
+        ui(self.app.switch_screen, LoginScreen())
 
 
 class LoginScreen(Screen):
@@ -966,6 +974,9 @@ class MyZenApp(App):
     }
     """
 
+    def _ui(self, fn, *args, **kwargs):
+        return self.call_from_thread(fn, *args, **kwargs)
+
     def _on_key(self, event):
         s = self.screen
         if isinstance(s, HistoryScreen):
@@ -977,34 +988,17 @@ class MyZenApp(App):
         handled = True
         if event.key == "p" and not s.pi:
             self.notify("Processing...")
-            if punch_in():
-                s.load_data()
-                self.notify("Punched in")
-            else:
-                self.notify("Punch-in failed", severity="error")
+            self._punch(s)
         elif event.key == "o" and s.pi:
             self.notify("Processing...")
-            if punch_out():
-                s.load_data()
-                self.notify("Punched out")
-            else:
-                self.notify("Punch-out failed", severity="error")
+            self._unpunch(s)
         elif event.key == "b" and not s.ob:
             self.notify("Processing...")
-            if break_start():
-                s.load_data()
-                self.notify("Break started")
-            else:
-                self.notify("Break start failed", severity="error")
+            self._break_start(s)
         elif event.key == "e" and s.ob:
             self.notify("Processing...")
-            if break_end():
-                s.load_data()
-                self.notify("Break ended")
-            else:
-                self.notify("Break end failed", severity="error")
+            self._break_end(s)
         elif event.key == "r":
-            self.notify("Refreshing...")
             s.load_data()
             self.notify("Refreshed")
         elif event.key == "h":
@@ -1015,6 +1009,38 @@ class MyZenApp(App):
             handled = False
         if handled:
             event.stop()
+
+    @work(thread=True)
+    def _punch(self, s):
+        if punch_in():
+            self._ui(s.load_data)
+            self._ui(self.notify, "Punched in")
+        else:
+            self._ui(self.notify, "Punch-in failed", severity="error")
+
+    @work(thread=True)
+    def _unpunch(self, s):
+        if punch_out():
+            self._ui(s.load_data)
+            self._ui(self.notify, "Punched out")
+        else:
+            self._ui(self.notify, "Punch-out failed", severity="error")
+
+    @work(thread=True)
+    def _break_start(self, s):
+        if break_start():
+            self._ui(s.load_data)
+            self._ui(self.notify, "Break started")
+        else:
+            self._ui(self.notify, "Break start failed", severity="error")
+
+    @work(thread=True)
+    def _break_end(self, s):
+        if break_end():
+            self._ui(s.load_data)
+            self._ui(self.notify, "Break ended")
+        else:
+            self._ui(self.notify, "Break end failed", severity="error")
 
     def check_idle(self) -> None:
         if not _XSS_AVAIL:
