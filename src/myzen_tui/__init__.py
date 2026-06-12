@@ -13,6 +13,7 @@ from textual import work
 
 CONFIG = Path.home() / ".config" / "ai.zs" / "zs.ini"
 DB = Path.home() / ".local" / "share" / "ai.zs" / "zs" / "zs.db"
+REPORT_DB = Path.home() / ".local" / "share" / "ai.zs" / "report_cache.json"
 TOKEN_FILE = Path.home() / ".config" / "ai.zs" / ".tui_token.json"
 AUTH = "https://auth.in.we360.ai"
 GATEWAY = "https://api.in.we360.ai"
@@ -172,7 +173,7 @@ def punch_in():
     try:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         r = api("/api/v1/me/punch_in/", "POST", {"time_in": now})
-        return bool(r and r.get("success"))
+        return bool(r and ("id" in r or r.get("success")))
     except Exception:
         return False
 
@@ -180,7 +181,7 @@ def punch_in():
 def punch_out():
     try:
         r = api("/api/v1/me/punch_out/", "POST", {})
-        return bool(r and r.get("success"))
+        return bool(r and ("id" in r or r.get("success")))
     except Exception:
         return False
 
@@ -191,7 +192,7 @@ def break_start():
         if not bt:
             return False
         r = api("/api/v1/me/start_break/", "POST", {"break_type_id": bt[0]["id"]})
-        return bool(r and r.get("success"))
+        return bool(r and ("id" in r or r.get("success")))
     except Exception:
         return False
 
@@ -199,7 +200,7 @@ def break_start():
 def break_end():
     try:
         r = api("/api/v1/me/end_break/", "POST", {})
-        return bool(r and r.get("success"))
+        return bool(r and ("id" in r or r.get("success")))
     except Exception:
         return False
 
@@ -304,7 +305,7 @@ def load_state():
     logs = s.get("punch_logs") or []
     ubreaks = s.get("user_breaks") or []
     latest = logs[-1] if logs else {}
-    pi = bool(latest.get("time_out") is None)
+    pi = bool(latest and latest.get("time_out") is None)
     ob = bool(len(ubreaks) > 0 and ubreaks[-1].get("break_end_time") is None)
     pi_time = latest.get("time_in") if pi else None
     po_time = latest.get("time_out") if not pi else None
@@ -332,6 +333,21 @@ def get_deb_url(script_path):
             m = re.search(r'DEB_INSTALLER_URL="([^"]+)"', line)
             if m:
                 return m.group(1)
+    except Exception:
+        return None
+
+
+def save_report_cache(records):
+    try:
+        REPORT_DB.parent.mkdir(parents=True, exist_ok=True)
+        REPORT_DB.write_text(json.dumps(records))
+    except Exception:
+        pass
+
+
+def load_report_cache():
+    try:
+        return json.loads(REPORT_DB.read_text())
     except Exception:
         return None
 
@@ -637,8 +653,14 @@ class ReportsScreen(Screen):
             start.strftime("%Y-%m-%dT00:00:00"),
             end.strftime("%Y-%m-%dT23:59:59"),
         )
+        raw = r.get("data") if r else None
+        if raw:
+            save_report_cache(r)
+        else:
+            cached = load_report_cache()
+            raw = cached.get("data") if cached else None
         records = {}
-        for d in (r.get("data") or []):
+        for d in (raw or []):
             date = d.get("attendance_date")
             if date:
                 records[date] = d

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "myzen-tui"
-version = "0.1.7"
+version = "0.1.8"
 description = "Terminal UI for WE360 MyZen employee monitoring"
 readme = "README.md"
 license = "MIT"
