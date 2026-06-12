@@ -2,7 +2,7 @@
 import configparser, json, sqlite3, urllib.request, urllib.parse, urllib.error
 import subprocess, re, shlex, sys, os, base64, asyncio, shutil
 import ctypes, ctypes.util
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from textual.app import App, ComposeResult, ScreenStackError
@@ -336,6 +336,27 @@ def get_deb_url(script_path):
         return None
 
 
+REPORT_COLUMNS = [
+    "attendance_date", "punch_in", "punch_out",
+    "active_duration", "online_duration", "idle_duration", "break_duration",
+    "productive_duration", "unproductive_duration", "neutral_duration",
+    "productive_percent", "mouse_clicks", "key_presses",
+    "top_application_used", "top_application_duration",
+    "top_url_used", "top_url_duration",
+]
+
+def fetch_report(start_date, end_date, page=1, limit=0):
+    body = {
+        "start_date": start_date,
+        "end_date": end_date,
+        "mode": "detailed",
+        "columns": REPORT_COLUMNS,
+        "page": page,
+        "limit": limit,
+    }
+    return api("/query/external/reports/dynamic_report", "POST", body)
+
+
 class SetupScreen(Screen):
     def compose(self):
         yield Container(
@@ -592,6 +613,103 @@ class HistoryScreen(Screen):
         event.stop()
 
 
+class ReportsScreen(Screen):
+    def compose(self) -> ComposeResult:
+        yield Container(
+            Static("DYNAMIC REPORT", id="report-title"),
+            Static("", id="report-range"),
+            Static("", id="report-list"),
+            Static("", id="report-divider"),
+            Static("", id="report-detail"),
+            Static("", id="report-keybar"),
+            id="report-main",
+        )
+
+    def on_mount(self) -> None:
+        self.records = []
+        self.idx = 0
+        self.load_data()
+
+    def load_data(self) -> None:
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=7)
+        r = fetch_report(
+            start.strftime("%Y-%m-%dT00:00:00"),
+            end.strftime("%Y-%m-%dT23:59:59"),
+        )
+        records = {}
+        for d in (r.get("data") or []):
+            date = d.get("attendance_date")
+            if date:
+                records[date] = d
+        self.records = sorted(records.items(), key=lambda x: x[0], reverse=True)
+        self.show()
+
+    def show(self) -> None:
+        if not self.records:
+            self.query_one("#report-list", Static).update("  No data available")
+            self.query_one("#report-detail", Static).update("")
+            self.query_one("#report-keybar", Static).update("  Q:Quit  ESC:Back")
+            self.query_one("#report-range", Static).update("")
+            return
+        now = datetime.now(timezone.utc)
+        week_ago = now - timedelta(days=7)
+        self.query_one("#report-range", Static).update(
+            f"  {week_ago.strftime('%b %d')} \u2013 {now.strftime('%b %d, %Y')}"
+        )
+        lines = []
+        for i, (date, rec) in enumerate(self.records):
+            mark = "\u25b8" if i == self.idx else " "
+            active = rec.get("active_duration", "--:--:--")
+            prod = rec.get("productive_percent")
+            pct = f"{prod:.0f}%" if prod is not None else "--"
+            lines.append(f"  {mark} {date}  {active} active  {pct}")
+        self.query_one("#report-list", Static).update("\n".join(lines))
+        self.show_detail()
+
+    def show_detail(self) -> None:
+        if not self.records:
+            return
+        date, rec = self.records[self.idx]
+        def v(key, default="--"):
+            val = rec.get(key)
+            return val if val is not None else default
+        lines = []
+        lines.append(f"  Date: {date}")
+        lines.append("")
+        lines.append(f"  Punch in:   {v('punch_in')}      Punch out:  {v('punch_out')}")
+        lines.append(f"  Active:     {v('active_duration')}    Idle:       {v('idle_duration')}")
+        lines.append(f"  Online:     {v('online_duration')}    Break:      {v('break_duration')}")
+        lines.append(f"  Productive: {v('productive_duration')}  ({v('productive_percent')}%)")
+        lines.append(f"  Unproduct:  {v('unproductive_duration')}")
+        lines.append(f"  Keys:       {v('key_presses')}           Clicks:     {v('mouse_clicks')}")
+        top_app = v("top_application_used")
+        top_app_dur = v("top_application_duration")
+        if top_app and top_app != "--":
+            lines.append(f"  Top app:    {top_app[:24]}  ({top_app_dur})")
+        top_url = v("top_url_used")
+        top_url_dur = v("top_url_duration")
+        if top_url and top_url != "--":
+            lines.append(f"  Top URL:    {top_url[:24]}  ({top_url_dur})")
+        self.query_one("#report-detail", Static).update("\n".join(lines))
+        self.query_one("#report-keybar", Static).update(
+            "  \u2191\u2193:Navigate  ESC:Back  Q:Quit"
+        )
+
+    def on_key(self, event):
+        if event.key == "escape":
+            self.app.switch_screen(DashboardScreen())
+        elif event.key == "q":
+            self.app.exit()
+        elif event.key in ("up", "k"):
+            self.idx = max(0, self.idx - 1)
+            self.show()
+        elif event.key in ("down", "j"):
+            self.idx = min(len(self.records) - 1, self.idx + 1)
+            self.show()
+        event.stop()
+
+
 class DashboardScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Container(
@@ -645,6 +763,7 @@ class DashboardScreen(Screen):
         if self.ob:
             parts.append("E:END")
         parts.append("R:RFSH")
+        parts.append("V:RPRT")
         parts.append("H:HIST")
         parts.append("Q:QUIT")
         self.query_one("#keybar", Static).update("  ".join(parts))
@@ -1007,6 +1126,61 @@ class MyZenApp(App):
         background: #1f2335;
     }
 
+    ReportsScreen {
+        overflow: auto;
+    }
+
+    #report-main {
+        margin: 0 1;
+        height: auto;
+    }
+
+    #report-title {
+        text-style: bold;
+        color: #7aa2f7;
+        height: 3;
+        text-align: center;
+        padding: 1 0;
+    }
+
+    #report-range {
+        color: #565f89;
+        height: 1;
+        margin: 0 0 0 0;
+    }
+
+    #report-list {
+        color: #c0caf5;
+        height: auto;
+        min-height: 1;
+        margin: 0 0 0 0;
+        background: #24283b;
+        border: solid #3b4261;
+        padding: 0 1;
+    }
+
+    #report-divider {
+        height: 1;
+    }
+
+    #report-detail {
+        color: #c0caf5;
+        height: auto;
+        min-height: 1;
+        margin: 0 0 0 0;
+        background: #24283b;
+        border: solid #3b4261;
+        padding: 0 1;
+    }
+
+    #report-keybar {
+        dock: bottom;
+        height: 1;
+        text-align: center;
+        color: #565f89;
+        background: #1f2335;
+    }
+
     #setup-spinner {
         margin: 1 0;
         display: none;
@@ -1052,6 +1226,8 @@ class MyZenApp(App):
             self._refresh(s)
         elif event.key == "h":
             self.push_screen(HistoryScreen())
+        elif event.key == "v":
+            self.push_screen(ReportsScreen())
         elif event.key == "q":
             self.exit()
         else:
