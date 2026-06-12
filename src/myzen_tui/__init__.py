@@ -191,7 +191,7 @@ def break_start():
         if not bt:
             return False
         r = api("/api/v1/me/start_break/", "POST", {"break_type_id": bt[0]["id"]})
-        return bool(r and "id" in r)
+        return bool(r and r.get("success"))
     except Exception:
         return False
 
@@ -299,6 +299,8 @@ def total_secs(logs):
 def load_state():
     refresh()
     s = api("/api/v1/me/status/")
+    if not s:
+        return [], [], False, False, None, None
     logs = s.get("punch_logs") or []
     ubreaks = s.get("user_breaks") or []
     latest = logs[-1] if logs else {}
@@ -470,21 +472,23 @@ class LoginScreen(Screen):
         if not email or not pw:
             self.query_one("#login-err", Static).update("Email and password required.")
             return
-        err = self.query_one("#login-err", Static)
-        err.update("Authenticating...")
+        self._err = self.query_one("#login-err", Static)
+        self._email = email
+        self._pw = pw
+        self._err.update("Authenticating...")
+        self._do_login()
+
+    @work(thread=True)
+    def _do_login(self):
         try:
-            auth(email, pw)
+            auth(self._email, self._pw)
         except RuntimeError as e:
-            err.update(str(e))
+            self.app.call_from_thread(self._err.update, str(e))
             return
-        self.app.switch_screen(DashboardScreen())
+        self.app.call_from_thread(self.app.switch_screen, DashboardScreen())
 
 
 class IdleWarningScreen(Screen):
-    def __init__(self, idle_secs):
-        super().__init__()
-        self.idle_start = idle_secs
-
     def compose(self) -> ComposeResult:
         yield Container(
             Static("\u26a0", id="idle-icon"),
@@ -512,17 +516,16 @@ class IdleWarningScreen(Screen):
         self.query_one("#idle-countdown", Static).update(
             f"Auto punch-out in {dur_str(remaining)}"
         )
+        cd = self.query_one("#idle-countdown", Static)
         if remaining <= 60:
-            self.query_one("#idle-countdown", Static).add_class("urgent")
+            cd.add_class("urgent")
+        else:
+            cd.remove_class("urgent")
 
     def dismiss(self, do_auto=False) -> None:
         self.app.pop_screen()
         if do_auto:
-            self.app._do_auto_punch_out()
-
-    def _on_key(self, event):
-        event.stop()
-        self.dismiss()
+            self.app._auto_punch()
 
 
 class HistoryScreen(Screen):
@@ -719,6 +722,8 @@ class DashboardScreen(Screen):
             pt = datetime.fromisoformat(self.pi_time.replace("Z", "+00:00").replace("z", "+00:00"))
             d = (now - pt).total_seconds()
             self.query_one("#punch-val", Static).update(dur_str(d))
+            ttl = total_secs(self.logs) + d
+            self.query_one("#today-val", Static).update(dur_str(ttl))
         except Exception:
             pass
 
@@ -740,7 +745,9 @@ def try_restore_session():
         if TOKEN:
             refresh()
             if TOKEN:
-                return True
+                s = api("/api/v1/me/status/")
+                if s:
+                    return True
     except Exception:
         pass
     TOKEN = None
@@ -1104,18 +1111,31 @@ class MyZenApp(App):
             return
         idle = get_idle_secs()
         if idle > IDLE_WARN + AUTO_PUNCH_TIMEOUT:
-            self._do_auto_punch_out()
+            self._auto_punch()
         elif idle > IDLE_WARN:
-            self.push_screen(IdleWarningScreen(idle))
+            self.push_screen(IdleWarningScreen())
 
-    def _do_auto_punch_out(self):
-        if punch_out():
-            self.notify("Auto punched out due to inactivity", severity="warning")
-            s = self.screen
-            if isinstance(s, DashboardScreen):
-                s.load_data()
-        sys.stdout.write("\a")
-        sys.stdout.flush()
+    def _auto_punch(self):
+        if getattr(self, '_auto_punching', False):
+            return
+        self._auto_punching = True
+        self._do_auto_punch()
+
+    @work(thread=True)
+    def _do_auto_punch(self):
+        try:
+            ok = punch_out()
+            if ok:
+                self._ui(self.notify, "Auto punched out due to inactivity", severity="warning")
+                s = self.screen
+                if isinstance(s, DashboardScreen):
+                    self._ui(s.load_data)
+            else:
+                self._ui(self.notify, "Auto punch-out failed", severity="error")
+            self._ui(sys.stdout.write, "\a")
+            self._ui(sys.stdout.flush)
+        finally:
+            self._ui(setattr, self, "_auto_punching", False)
 
     def on_mount(self) -> None:
         if try_restore_session():
