@@ -617,7 +617,10 @@ class HistoryScreen(Screen):
 
     def on_key(self, event):
         if event.key == "escape":
-            self.app.switch_screen(DashboardScreen())
+            self.app.pop_screen()
+            s = self.app.screen
+            if isinstance(s, DashboardScreen):
+                s.load_data()
         elif event.key == "q":
             self.app.exit()
         elif event.key in ("up", "k"):
@@ -644,6 +647,8 @@ class ReportsScreen(Screen):
     def on_mount(self) -> None:
         self.records = []
         self.idx = 0
+        self.query_one("#report-list", Static).update("  Loading report data...")
+        self.query_one("#report-keybar", Static).update("  Fetching from WE360...")
         self.load_data()
 
     def load_data(self) -> None:
@@ -724,7 +729,10 @@ class ReportsScreen(Screen):
 
     def on_key(self, event):
         if event.key == "escape":
-            self.app.switch_screen(DashboardScreen())
+            self.app.pop_screen()
+            s = self.app.screen
+            if isinstance(s, DashboardScreen):
+                s.load_data()
         elif event.key == "q":
             self.app.exit()
         elif event.key in ("up", "k"):
@@ -1251,8 +1259,10 @@ class MyZenApp(App):
             self.notify("Processing...")
             self._refresh(s)
         elif event.key == "h":
+            self.notify("Processing...")
             self.push_screen(HistoryScreen())
         elif event.key == "v":
+            self.notify("Processing...")
             self.push_screen(ReportsScreen())
         elif event.key == "q":
             self.exit()
