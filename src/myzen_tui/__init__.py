@@ -662,7 +662,7 @@ class ReportsScreen(Screen):
             mark = "\u25b8" if i == self.idx else " "
             active = rec.get("active_duration", "--:--:--")
             prod = rec.get("productive_percent")
-            pct = f"{prod:.0f}%" if prod is not None else "--"
+            pct = f"{prod:.0f}%" if isinstance(prod, (int, float)) else "--"
             lines.append(f"  {mark} {date}  {active} active  {pct}")
         self.query_one("#report-list", Static).update("\n".join(lines))
         self.show_detail()
@@ -673,14 +673,18 @@ class ReportsScreen(Screen):
         date, rec = self.records[self.idx]
         def v(key, default="--"):
             val = rec.get(key)
-            return val if val is not None else default
+            if val is None or val == "-":
+                return default
+            return val
         lines = []
         lines.append(f"  Date: {date}")
         lines.append("")
         lines.append(f"  Punch in:   {v('punch_in')}      Punch out:  {v('punch_out')}")
         lines.append(f"  Active:     {v('active_duration')}    Idle:       {v('idle_duration')}")
         lines.append(f"  Online:     {v('online_duration')}    Break:      {v('break_duration')}")
-        lines.append(f"  Productive: {v('productive_duration')}  ({v('productive_percent')}%)")
+        prod_pct = v("productive_percent")
+        prod_str = f"({prod_pct}%)" if prod_pct != "--" else ""
+        lines.append(f"  Productive: {v('productive_duration')}  {prod_str}")
         lines.append(f"  Unproduct:  {v('unproductive_duration')}")
         lines.append(f"  Keys:       {v('key_presses')}           Clicks:     {v('mouse_clicks')}")
         top_app = v("top_application_used")
