@@ -21,7 +21,8 @@ API_TIMEOUT = 10
 CLIENT = None
 TOKEN = None
 RT = None
-IDLE_WARN = 1500
+IDLE_WARN = 1200
+AUTO_PUNCH_TIMEOUT = 300
 
 XSSInfo = None
 _XSS_AVAIL = False
@@ -171,7 +172,7 @@ def punch_in():
     try:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         r = api("/api/v1/me/punch_in/", "POST", {"time_in": now})
-        return bool(r and "id" in r)
+        return bool(r and r.get("success"))
     except Exception:
         return False
 
@@ -198,7 +199,7 @@ def break_start():
 def break_end():
     try:
         r = api("/api/v1/me/end_break/", "POST", {})
-        return bool(r and "id" in r)
+        return bool(r and r.get("success"))
     except Exception:
         return False
 
@@ -486,29 +487,42 @@ class IdleWarningScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Container(
-            Static("", id="idle-icon"),
-            Static("IDLE DETECTED", id="idle-title"),
+            Static("\u26a0", id="idle-icon"),
+            Static("INACTIVITY WARNING", id="idle-title"),
             Static("", id="idle-msg"),
+            Static("", id="idle-countdown"),
             Static("Press any key to dismiss", id="idle-hint"),
             id="idle-box",
         )
 
     def on_mount(self) -> None:
         self.update_msg()
-        self.set_interval(5, self.update_msg)
+        self.set_interval(1, self.update_msg)
 
     def update_msg(self) -> None:
         idle = get_idle_secs()
+        elapsed = idle - IDLE_WARN
+        remaining = AUTO_PUNCH_TIMEOUT - elapsed
+        if remaining <= 0:
+            self.dismiss(do_auto=True)
+            return
         self.query_one("#idle-msg", Static).update(
-            f"You've been idle for {dur_str(idle)}\n"
-            f"(threshold: {dur_str(IDLE_WARN)})"
+            f"You've been idle for {dur_str(idle)}"
         )
-        if idle < IDLE_WARN:
-            self.app.pop_screen()
+        self.query_one("#idle-countdown", Static).update(
+            f"Auto punch-out in {dur_str(remaining)}"
+        )
+        if remaining <= 60:
+            self.query_one("#idle-countdown", Static).add_class("urgent")
+
+    def dismiss(self, do_auto=False) -> None:
+        self.app.pop_screen()
+        if do_auto:
+            self.app._do_auto_punch_out()
 
     def _on_key(self, event):
-        self.app.pop_screen()
         event.stop()
+        self.dismiss()
 
 
 class HistoryScreen(Screen):
@@ -655,13 +669,18 @@ class DashboardScreen(Screen):
             bar.update("  \u25cb PUNCHED OUT  ")
 
         ttl = total_secs(logs)
+        if pi and pi_time:
+            try:
+                pt = datetime.fromisoformat(pi_time.replace("Z", "+00:00").replace("z", "+00:00"))
+                ttl += (now - pt).total_seconds()
+            except Exception:
+                pass
         self.query_one("#today-val", Static).update(dur_str(ttl))
 
         break_val = "--"
-        if ob and len(ubreaks) > 0:
-            break_val = ubreaks[-1].get("break_type_name", "Break")[:10]
-        elif len(ubreaks) > 0:
-            break_val = "None"
+        if ob:
+            if len(ubreaks) > 0:
+                break_val = ubreaks[-1].get("break_type_name", "Break")[:10]
         self.query_one("#break-val", Static).update(break_val)
 
         timer_val = "--:--:--"
@@ -890,18 +909,39 @@ class MyZenApp(App):
         background: #24283b;
     }
 
-    #idle-title {
+    #idle-icon {
         text-align: center;
-        text-style: bold;
         color: #e0af68;
         height: 3;
         padding: 1 0;
     }
 
+    #idle-title {
+        text-align: center;
+        text-style: bold;
+        color: #e0af68;
+        height: 1;
+    }
+
     #idle-msg {
         text-align: center;
         color: #c0caf5;
-        height: 3;
+        height: 1;
+        margin-top: 1;
+    }
+
+    #idle-countdown {
+        text-align: center;
+        color: #f7768e;
+        height: 1;
+        text-style: bold;
+        margin-top: 1;
+    }
+
+    #idle-countdown.urgent {
+        color: #f7768e;
+        text-style: bold;
+        background: #3a1515;
     }
 
     #idle-hint {
@@ -982,6 +1022,8 @@ class MyZenApp(App):
         if isinstance(s, HistoryScreen):
             return
         if isinstance(s, IdleWarningScreen):
+            s.dismiss()
+            event.stop()
             return
         if not isinstance(s, DashboardScreen):
             return
@@ -999,8 +1041,8 @@ class MyZenApp(App):
             self.notify("Processing...")
             self._break_end(s)
         elif event.key == "r":
-            s.load_data()
-            self.notify("Refreshed")
+            self.notify("Processing...")
+            self._refresh(s)
         elif event.key == "h":
             self.push_screen(HistoryScreen())
         elif event.key == "q":
@@ -1042,6 +1084,11 @@ class MyZenApp(App):
         else:
             self._ui(self.notify, "Break end failed", severity="error")
 
+    @work(thread=True)
+    def _refresh(self, s):
+        self._ui(s.load_data)
+        self._ui(self.notify, "Refreshed")
+
     def check_idle(self) -> None:
         if not _XSS_AVAIL:
             return
@@ -1051,10 +1098,24 @@ class MyZenApp(App):
             return
         if isinstance(s, IdleWarningScreen):
             return
-        if isinstance(s, DashboardScreen) and getattr(s, 'pi', None):
-            idle = get_idle_secs()
-            if idle > IDLE_WARN:
-                self.push_screen(IdleWarningScreen(idle))
+        if not isinstance(s, DashboardScreen):
+            return
+        if not getattr(s, 'pi', None):
+            return
+        idle = get_idle_secs()
+        if idle > IDLE_WARN + AUTO_PUNCH_TIMEOUT:
+            self._do_auto_punch_out()
+        elif idle > IDLE_WARN:
+            self.push_screen(IdleWarningScreen(idle))
+
+    def _do_auto_punch_out(self):
+        if punch_out():
+            self.notify("Auto punched out due to inactivity", severity="warning")
+            s = self.screen
+            if isinstance(s, DashboardScreen):
+                s.load_data()
+        sys.stdout.write("\a")
+        sys.stdout.flush()
 
     def on_mount(self) -> None:
         if try_restore_session():
