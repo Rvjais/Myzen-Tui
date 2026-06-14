@@ -206,7 +206,8 @@ def break_start():
         bt = api("/api/v1/me/break_types/")
         if not bt:
             return False
-        r = api("/api/v1/me/start_break/", "POST", {"break_type_id": bt[0]["id"]})
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        r = api("/api/v1/me/start_break/", "POST", {"break_type_id": bt[0]["id"], "startTime": now})
         return bool(r and ("id" in r or r.get("success")))
     except Exception:
         return False
@@ -915,7 +916,7 @@ class TrackingScreen(Screen):
 class DashboardScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Container(
-            Static("WE360 MyZen Live", id="dash-title"),
+            Static("Made by Ranveer \u00b7 WE360 MyZen Live", id="dash-title"),
             Static("...", id="status-bar"),
             Horizontal(
                 Container(
@@ -1098,8 +1099,8 @@ class MyZenApp(App):
     }
 
     #splash-box {
-        width: 40;
-        height: 8;
+        width: 44;
+        height: 12;
         border: thick #f7768e;
         padding: 1 2;
         background: #24283b;
@@ -1109,14 +1110,14 @@ class MyZenApp(App):
         text-style: bold;
         color: #f7768e;
         text-align: center;
-        height: 3;
-        padding: 1 0;
+        height: 4;
+        padding: 2 0 0 0;
     }
 
     #splash-sub {
-        color: #565f89;
+        color: #f7768e;
         text-align: center;
-        height: 1;
+        height: 3;
     }
 
     #splash-loader {
