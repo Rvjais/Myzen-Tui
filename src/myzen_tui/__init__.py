@@ -468,7 +468,7 @@ def set_tracking(dotdesktop, enable):
             txt = local_f.read_text()
         else:
             return
-        if txt.startswith("Exec=env "):
+        if re.search(r"^Exec=env \S+ ", txt, re.MULTILINE):
             return
         env = _tracking_env(txt, dotdesktop)
         txt = re.sub(r"^(Exec=)", lambda m, e=env: f"Exec=env {e} ", txt, flags=re.MULTILINE)
@@ -864,7 +864,7 @@ class TrackingScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Container(
             Static("APPS TRACKED BY AGENT", id="track-title"),
-            Static("", id="track-list"),
+            Container(Static("", id="track-list"), id="track-scroll"),
             Static("", id="track-keybar"),
             id="track-main",
         )
@@ -875,14 +875,18 @@ class TrackingScreen(Screen):
         self.show()
 
     def show(self) -> None:
+        total = len(self.items)
+        start = max(0, self.idx - 10)
+        end = min(total, start + 21)
         lines = []
-        for i, (_, a) in enumerate(self.items):
+        for i in range(start, end):
+            _, a = self.items[i]
             mark = "\u25b8" if i == self.idx else " "
-            box = "\u2611" if a["tracked"] else "\u2610"
+            box = "[x]" if a["tracked"] else "[ ]"
             lines.append(f"  {mark} {box}  {a['name']}")
         self.query_one("#track-list", Static).update("\n".join(lines))
         self.query_one("#track-keybar", Static).update(
-            "  \u2191\u2193:Navigate  SPACE:Toggle  ESC:Back  Q:Quit"
+            f"  \u2191\u2193:Navigate  SPACE:Toggle  ESC:Back  Q:Quit  ({self.idx + 1}/{total})"
         )
 
     def on_key(self, event):
@@ -896,7 +900,7 @@ class TrackingScreen(Screen):
         elif event.key in ("down", "j"):
             self.idx = min(len(self.items) - 1, self.idx + 1)
             self.show()
-        elif event.key in (" ", "enter"):
+        elif event.key in (" ", "space", "enter"):
             desk, a = self.items[self.idx]
             enable = not a["tracked"]
             set_tracking(desk, enable)
@@ -1390,11 +1394,15 @@ class MyZenApp(App):
         color: #7aa2f7;
         padding: 1 0;
     }
+    #track-scroll {
+        height: 1fr;
+        overflow-y: auto;
+        margin: 0 1;
+    }
     #track-list {
         color: #c0caf5;
         height: auto;
         min-height: 1;
-        margin: 0 1;
     }
     #track-keybar {
         dock: bottom;
