@@ -207,7 +207,11 @@ def break_start():
         if not bt:
             return False
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        r = api("/api/v1/me/start_break/", "POST", {"break_type_id": bt[0]["id"], "startTime": now})
+        r = api("/api/v1/me/start_break/", "POST", {
+            "break_type": {"id": bt["data"][0]["id"]},
+            "name": bt["data"][0]["name"],
+            "start_time": now,
+        })
         return bool(r and ("id" in r or r.get("success")))
     except Exception:
         return False
