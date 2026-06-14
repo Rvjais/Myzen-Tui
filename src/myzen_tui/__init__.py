@@ -15,6 +15,7 @@ CONFIG = Path.home() / ".config" / "ai.zs" / "zs.ini"
 DB = Path.home() / ".local" / "share" / "ai.zs" / "zs" / "zs.db"
 REPORT_DB = Path.home() / ".local" / "share" / "ai.zs" / "report_cache.json"
 TOKEN_FILE = Path.home() / ".config" / "ai.zs" / ".tui_token.json"
+TRACKING_DIR = Path.home() / ".local" / "share" / "applications"
 AUTH = "https://auth.in.we360.ai"
 GATEWAY = "https://api.in.we360.ai"
 REALM = "ind-prod"
@@ -385,6 +386,103 @@ def fetch_report(start_date, end_date, page=1, limit=0):
         "limit": limit,
     }
     return api("/query/external/reports/dynamic_report", "POST", body)
+
+
+TRACKING_SKIP = {"wine-extension", "waydroid", "code-url-handler", "code-insiders-url-handler"}
+
+def _tracking_env(content, fname):
+    if "Alacritty" in content:
+        return "WINIT_UNIX_BACKEND=x11"
+    for line in content.splitlines():
+        if line.startswith("Categories="):
+            if "Qt" in line or "KDE" in line:
+                return "QT_QPA_PLATFORM=xcb"
+            break
+    return "GDK_BACKEND=x11"
+
+def scan_apps():
+    apps = {}
+    sys_dir = Path("/usr/share/applications")
+    local_dir = TRACKING_DIR
+    seen = set()
+    for f in sorted(sys_dir.glob("*.desktop")):
+        try:
+            if any(x in f.name for x in TRACKING_SKIP):
+                continue
+            txt = f.read_text()
+            name = None
+            is_app = False
+            hidden = False
+            for line in txt.splitlines():
+                if not name and line.startswith("Name="):
+                    name = line.split("=", 1)[1]
+                if line.startswith("Type=Application"):
+                    is_app = True
+                if line.startswith("Hidden=true"):
+                    hidden = True
+            if not name or not is_app or hidden:
+                continue
+            seen.add(f.name)
+            lf = local_dir / f.name
+            env = _tracking_env(txt, f.name)
+            tracked = False
+            if lf.exists():
+                try:
+                    with lf.open() as fh:
+                        tracked = "env " in fh.read(4096)
+                except Exception:
+                    pass
+            apps[f.name] = {"name": name, "tracked": tracked, "path": f, "local": lf, "env": env}
+        except Exception:
+            continue
+    for f in sorted(local_dir.glob("*.desktop")):
+        if f.name in seen:
+            continue
+        if any(x in f.name for x in TRACKING_SKIP):
+            continue
+        try:
+            txt = f.read_text()
+            name = None
+            for line in txt.splitlines():
+                if line.startswith("Name="):
+                    name = line.split("=", 1)[1]
+                    break
+            if not name:
+                continue
+            tracked = "env " in txt
+            apps[f.name] = {
+                "name": name, "tracked": tracked, "path": None, "local": f,
+                "env": "GDK_BACKEND=x11",
+            }
+        except Exception:
+            continue
+    return apps
+
+def set_tracking(dotdesktop, enable):
+    sys_f = Path("/usr/share/applications") / dotdesktop
+    local_f = TRACKING_DIR / dotdesktop
+    if enable:
+        if sys_f.exists():
+            txt = sys_f.read_text()
+        elif local_f.exists():
+            txt = local_f.read_text()
+        else:
+            return
+        if txt.startswith("Exec=env "):
+            return
+        env = _tracking_env(txt, dotdesktop)
+        txt = re.sub(r"^(Exec=)", lambda m, e=env: f"Exec=env {e} ", txt, flags=re.MULTILINE)
+        TRACKING_DIR.mkdir(parents=True, exist_ok=True)
+        local_f.write_text(txt)
+    else:
+        if local_f.exists():
+            if sys_f.exists():
+                local_f.unlink(missing_ok=True)
+            else:
+                txt = local_f.read_text()
+                txt = re.sub(r"^Exec=env \S+ ", "Exec=", txt, flags=re.MULTILINE)
+                local_f.write_text(txt)
+    subprocess.run(["update-desktop-database", str(TRACKING_DIR)], capture_output=True)
 
 
 class SetupScreen(Screen):
@@ -762,6 +860,54 @@ class ReportsScreen(Screen):
         event.stop()
 
 
+class TrackingScreen(Screen):
+    def compose(self) -> ComposeResult:
+        yield Container(
+            Static("APPS TRACKED BY AGENT", id="track-title"),
+            Static("", id="track-list"),
+            Static("", id="track-keybar"),
+            id="track-main",
+        )
+
+    def on_mount(self) -> None:
+        self.idx = 0
+        self.items = sorted(scan_apps().items(), key=lambda x: x[1]["name"].lower())
+        self.show()
+
+    def show(self) -> None:
+        lines = []
+        for i, (_, a) in enumerate(self.items):
+            mark = "\u25b8" if i == self.idx else " "
+            box = "\u2611" if a["tracked"] else "\u2610"
+            lines.append(f"  {mark} {box}  {a['name']}")
+        self.query_one("#track-list", Static).update("\n".join(lines))
+        self.query_one("#track-keybar", Static).update(
+            "  \u2191\u2193:Navigate  SPACE:Toggle  ESC:Back  Q:Quit"
+        )
+
+    def on_key(self, event):
+        if event.key == "escape":
+            self.app.pop_screen()
+        elif event.key == "q":
+            self.app.exit()
+        elif event.key in ("up", "k"):
+            self.idx = max(0, self.idx - 1)
+            self.show()
+        elif event.key in ("down", "j"):
+            self.idx = min(len(self.items) - 1, self.idx + 1)
+            self.show()
+        elif event.key in (" ", "enter"):
+            desk, a = self.items[self.idx]
+            enable = not a["tracked"]
+            set_tracking(desk, enable)
+            a["tracked"] = enable
+            self.show()
+            self.app.notify(
+                f"{'Tracked' if enable else 'Untracked'}: {a['name']}"
+            )
+        event.stop()
+
+
 class DashboardScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Container(
@@ -817,6 +963,7 @@ class DashboardScreen(Screen):
         parts.append("R:RFSH")
         parts.append("V:RPRT")
         parts.append("H:HIST")
+        parts.append("T:TRK")
         parts.append("Q:QUIT")
         self.query_one("#keybar", Static).update("  ".join(parts))
 
@@ -1233,6 +1380,30 @@ class MyZenApp(App):
         background: #1f2335;
     }
 
+    #track-main {
+        height: 100%;
+    }
+    #track-title {
+        height: 3;
+        text-align: center;
+        text-style: bold;
+        color: #7aa2f7;
+        padding: 1 0;
+    }
+    #track-list {
+        color: #c0caf5;
+        height: auto;
+        min-height: 1;
+        margin: 0 1;
+    }
+    #track-keybar {
+        dock: bottom;
+        height: 1;
+        text-align: center;
+        color: #565f89;
+        background: #1f2335;
+    }
+
     #setup-spinner {
         margin: 1 0;
         display: none;
@@ -1282,6 +1453,8 @@ class MyZenApp(App):
         elif event.key == "v":
             self.notify("Processing...")
             self.push_screen(ReportsScreen())
+        elif event.key == "t":
+            self.push_screen(TrackingScreen())
         elif event.key == "q":
             self.exit()
         else:
