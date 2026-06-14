@@ -1077,10 +1077,51 @@ def try_restore_session():
     return False
 
 
+class SplashScreen(Screen):
+    def compose(self) -> ComposeResult:
+        yield Container(
+            Static("Made by Ranveer", id="splash-title"),
+            Static("\u2764\ufe0f", id="splash-sub"),
+            LoadingIndicator(id="splash-loader"),
+            id="splash-box",
+        )
+
+
 class MyZenApp(App):
     CSS = """
     Screen {
         background: #1a1b26;
+    }
+
+    SplashScreen {
+        align: center middle;
+    }
+
+    #splash-box {
+        width: 40;
+        height: 8;
+        border: thick #f7768e;
+        padding: 1 2;
+        background: #24283b;
+    }
+
+    #splash-title {
+        text-style: bold;
+        color: #f7768e;
+        text-align: center;
+        height: 3;
+        padding: 1 0;
+    }
+
+    #splash-sub {
+        color: #565f89;
+        text-align: center;
+        height: 1;
+    }
+
+    #splash-loader {
+        height: 1;
+        margin-top: 1;
     }
 
     LoginScreen {
@@ -1547,6 +1588,11 @@ class MyZenApp(App):
             self._ui(setattr, self, "_auto_punching", False)
 
     def on_mount(self) -> None:
+        self.push_screen(SplashScreen())
+        self.set_timer(2, self._after_splash)
+
+    def _after_splash(self) -> None:
+        self.pop_screen()
         if try_restore_session():
             self.push_screen(DashboardScreen())
         elif is_configured():
