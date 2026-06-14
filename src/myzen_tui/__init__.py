@@ -85,15 +85,29 @@ def _init_xss():
 _init_xss()
 
 def get_idle_secs():
-    if not _XSS_AVAIL:
-        return 0
+    if _XSS_AVAIL:
+        try:
+            root = _X11_LIB.XDefaultRootWindow(_X11_DISP)
+            info = XSSInfo()
+            _XSS_LIB.XScreenSaverQueryInfo(_X11_DISP, root, ctypes.byref(info))
+            return info.idle // 1000
+        except Exception:
+            pass
     try:
-        root = _X11_LIB.XDefaultRootWindow(_X11_DISP)
-        info = XSSInfo()
-        _XSS_LIB.XScreenSaverQueryInfo(_X11_DISP, root, ctypes.byref(info))
-        return info.idle // 1000
+        import dbus
+        bus = dbus.SessionBus()
+        obj = bus.get_object("org.freedesktop.ScreenSaver", "/ScreenSaver")
+        idle = obj.GetSessionIdleTime(dbus_interface="org.freedesktop.ScreenSaver")
+        return int(idle) // 1000
     except Exception:
-        return 0
+        pass
+    try:
+        r = subprocess.run(["xprintidle"], capture_output=True, timeout=2)
+        if r.returncode == 0 and r.stdout.strip():
+            return int(r.stdout.strip()) // 1000
+    except Exception:
+        pass
+    return 0
 
 
 def load_client():
@@ -649,9 +663,10 @@ class ReportsScreen(Screen):
         self.idx = 0
         self.query_one("#report-list", Static).update("  Loading report data...")
         self.query_one("#report-keybar", Static).update("  Fetching from WE360...")
-        self.load_data()
+        self._load_data()
 
-    def load_data(self) -> None:
+    @work(thread=True)
+    def _load_data(self):
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=7)
         r = fetch_report(
@@ -669,6 +684,9 @@ class ReportsScreen(Screen):
             date = d.get("attendance_date")
             if date:
                 records[date] = d
+        self.app.call_from_thread(self._set_results, records)
+
+    def _set_results(self, records):
         self.records = sorted(records.items(), key=lambda x: x[0], reverse=True)
         self.show()
 
@@ -1309,8 +1327,6 @@ class MyZenApp(App):
         self._ui(self.notify, "Refreshed")
 
     def check_idle(self) -> None:
-        if not _XSS_AVAIL:
-            return
         try:
             s = self.screen
         except ScreenStackError:
